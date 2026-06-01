@@ -16,11 +16,6 @@ rekordbox XMLからプレイリストを読み込む方法と画像をGemini API
 
 17 曲以上の場合は左右 8 曲ずつ最大 16 曲まで表示し、次の行に `and 12 more tracks...` のような残り曲数付きの省略行を表示して以降の曲は省略されます。
 
-## インストール
-
-- GitHub Releases から Windows 向けの `setorigen.exe` をダウンロードし、任意のフォルダに置いて実行してください。インストーラは使用しません。正式配布物は単体 exe です。
-- 現時点では code signing 証明書による署名は行いません。そのため、初回起動時に Windows SmartScreen やセキュリティソフトが未署名アプリとして警告を表示する場合があります。配布元が正しいことを確認してから実行してください。
-
 ## アンインストール
 - SetoriGenを終了してから、ダウンロードした `setorigen.exe` を削除してください。
 - exe を削除しても `%APPDATA%\SetoriGen` 配下の保存データやログは残ります。不要な場合は次のフォルダまたはファイルを削除してください。
@@ -81,6 +76,11 @@ rekordbox XMLと背景画像はローカルファイルとして読み込みま�
 - TypeScript
 - Vite
 - Canvas PNG rendering
+
+## 環境変数
+- GEMINI_API_KEY=your_api_key_here
+- VITE_DEV_SERVER_HOST=0.0.0.0
+- VITE_DEV_SERVER_PORT=1420
 
 ## 開発セットアップ
 
