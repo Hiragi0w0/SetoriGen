@@ -268,6 +268,7 @@ function drawSetlist(ctx: CanvasRenderingContext2D, page: RenderPage): void {
     const column = columns[columnIndex];
     const rowIndex = index % TRACKS_PER_COLUMN;
     const y = LIST_START_Y + rowIndex * ROW_HEIGHT;
+    const hasArtist = track.artist.trim().length > 0;
     const bpm = formatBpm(track.bpm);
     const trackNumber = track.number.toString().padStart(2, "0");
     ctx.font = font(18, 700);
@@ -275,6 +276,8 @@ function drawSetlist(ctx: CanvasRenderingContext2D, page: RenderPage): void {
     const availableWidth = column.rightEdge - column.textX - bpmWidth - (bpm ? TITLE_BPM_GAP : 0);
     ctx.font = font(22, 800);
     const title = truncateText(ctx, track.title, availableWidth);
+    const titleY = hasArtist ? y - 10 : y;
+    const bpmY = hasArtist ? y - 16 : titleY;
 
     drawRowRule(ctx, column.lineStart, column.rightEdge, y + 36);
 
@@ -285,18 +288,20 @@ function drawSetlist(ctx: CanvasRenderingContext2D, page: RenderPage): void {
     ctx.textAlign = "left";
 
     ctx.fillStyle = "rgba(255,255,255,0.92)";
-    ctx.fillText(title, column.textX, y - 10);
+    ctx.fillText(title, column.textX, titleY);
 
-    ctx.font = font(18, 600);
-    ctx.fillStyle = "rgba(255,255,255,0.68)";
-    const artist = truncateText(ctx, track.artist, column.rightEdge - column.textX);
-    ctx.fillText(artist, column.textX, y + 20);
+    if (hasArtist) {
+      ctx.font = font(18, 600);
+      ctx.fillStyle = "rgba(255,255,255,0.68)";
+      const artist = truncateText(ctx, track.artist.trim(), column.rightEdge - column.textX);
+      ctx.fillText(artist, column.textX, y + 20);
+    }
 
     if (bpm) {
       ctx.textAlign = "right";
       ctx.fillStyle = "rgba(255,255,255,0.68)";
       ctx.font = font(18, 700);
-      ctx.fillText(bpm, column.rightEdge, y - 16);
+      ctx.fillText(bpm, column.rightEdge, bpmY);
       ctx.textAlign = "left";
     }
   });
@@ -391,12 +396,14 @@ function drawWideSetlist(ctx: CanvasRenderingContext2D, tracks: Track[], omitted
     const rowIndex = index % WIDE_TRACKS_PER_COLUMN;
     const column = columns[columnIndex];
     const y = WIDE_LIST_START_Y + rowIndex * WIDE_ROW_HEIGHT;
+    const hasArtist = track.artist.trim().length > 0;
     const trackNumber = track.number.toString().padStart(2, "0");
     const bpm = formatBpm(track.bpm);
     const bpmWidth = bpm ? 88 : 0;
     const titleMaxWidth = column.rightEdge - column.textX - bpmWidth - (bpm ? 18 : 0);
-    const titleY = y - WIDE_ROW_HEIGHT * 0.17;
+    const baseTitleY = y - WIDE_ROW_HEIGHT * 0.17;
     const artistY = y + WIDE_ROW_HEIGHT * 0.29;
+    const titleY = hasArtist ? baseTitleY : y;
 
     drawRowRule(ctx, column.left, column.rightEdge, y + WIDE_ROW_HEIGHT / 2 - 2);
 
@@ -410,9 +417,11 @@ function drawWideSetlist(ctx: CanvasRenderingContext2D, tracks: Track[], omitted
     ctx.font = font(titleSize, 800);
     ctx.fillText(truncateText(ctx, track.title, titleMaxWidth), column.textX, titleY);
 
-    ctx.fillStyle = "rgba(255,255,255,0.68)";
-    ctx.font = font(artistSize, 600);
-    ctx.fillText(truncateText(ctx, track.artist, column.rightEdge - column.textX), column.textX, artistY);
+    if (hasArtist) {
+      ctx.fillStyle = "rgba(255,255,255,0.68)";
+      ctx.font = font(artistSize, 600);
+      ctx.fillText(truncateText(ctx, track.artist.trim(), column.rightEdge - column.textX), column.textX, artistY);
+    }
 
     if (bpm) {
       ctx.textAlign = "right";
@@ -442,14 +451,6 @@ function drawWideFooter(ctx: CanvasRenderingContext2D, metadata: CardMetadata): 
   ctx.stroke();
 
   drawSparkle(ctx, WIDE_LEFT + 10, 1032);
-
-  if (metadata.message.trim()) {
-    ctx.fillStyle = "rgba(255,255,255,0.58)";
-    ctx.font = font(24, 500);
-    ctx.textAlign = "right";
-    ctx.fillText(truncateText(ctx, metadata.message.trim(), 480), WIDE_RIGHT, 966);
-    ctx.textAlign = "left";
-  }
 }
 
 function drawColumnSeparator(ctx: CanvasRenderingContext2D, x: number): void {
