@@ -10,6 +10,7 @@ type VisualCase =
   | "long-text"
   | "mixed-bpm"
   | "japanese"
+  | "title-only"
   | "vrchat-safe-30"
   | "vrchat-safe-32"
   | "vrchat-safe-long-text"
@@ -22,6 +23,7 @@ const CASES = new Set<VisualCase>([
   "long-text",
   "mixed-bpm",
   "japanese",
+  "title-only",
   "vrchat-safe-30",
   "vrchat-safe-32",
   "vrchat-safe-long-text",
@@ -177,6 +179,15 @@ function buildScenario(visualCase: VisualCase): {
     };
   }
 
+  if (visualCase === "title-only") {
+    return {
+      aspectRatio: "square",
+      metadata: baseMetadata,
+      totalTrackCount: 16,
+      tracks: titleOnlyTracks(16)
+    };
+  }
+
   if (visualCase === "wide-32") {
     return {
       aspectRatio: "wide",
@@ -284,6 +295,14 @@ function numberedTracks(count: number): Track[] {
   return Array.from({ length: count }, (_, index) => ({
     ...seedTracks[index % seedTracks.length],
     number: index + 1
+  }));
+}
+
+function titleOnlyTracks(count: number): Track[] {
+  return numberedTracks(count).map((track, index) => ({
+    ...track,
+    artist: index % 2 === 0 ? "" : "---",
+    bpm: index % 2 === 0 ? track.bpm : null
   }));
 }
 
