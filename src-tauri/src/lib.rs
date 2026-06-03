@@ -428,6 +428,18 @@ fn clear_gemini_api_key() -> Result<SavedSecretStatus, String> {
 }
 
 #[tauri::command]
+fn import_serato_history_txt(path: String) -> Result<Vec<Track>, String> {
+    log_info("import_serato_history_txt.start", "path_present=true");
+    let text = read_serato_txt(&path)?;
+    let tracks = parse_serato_history_txt(&text)?;
+    log_info(
+        "import_serato_history_txt.success",
+        format!("track_count={}", tracks.len()),
+    );
+    Ok(tracks)
+}
+
+#[tauri::command]
 fn get_playlist_tracks(path: String, playlist_key: String) -> Result<Vec<Track>, String> {
     log_info(
         "get_playlist_tracks.start",
@@ -792,6 +804,260 @@ fn read_xml(path: &str) -> Result<String, String> {
         log_error("read_xml.error", format!("path_present=true error={error}"));
         message
     })
+}
+
+fn validate_serato_txt_path(path: &str) -> Result<(), String> {
+    let path = Path::new(path);
+    if !path.is_file() {
+        return Err("Serato History txtファイルを選択してください。".to_string());
+    }
+    if !has_extension(path, &["txt"]) {
+        return Err("Serato History txtファイルのみ読み込めます。".to_string());
+    }
+    Ok(())
+}
+
+fn read_serato_txt(path: &str) -> Result<String, String> {
+    validate_serato_txt_path(path)?;
+    let bytes = fs::read(path).map_err(|error| {
+        log_error(
+            "read_serato_txt.error",
+            format!("path_present=true error={error}"),
+        );
+        format!("Serato txtファイルを読み込めませんでした。{error}")
+    })?;
+
+    if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
+        return String::from_utf8(bytes[3..].to_vec()).map_err(|error| {
+            format!("Serato txtファイルをUTF-8として解釈できませんでした。{error}")
+        });
+    }
+
+    if bytes.starts_with(&[0xff, 0xfe]) {
+        return decode_utf16_bytes(&bytes[2..], true);
+    }
+
+    if bytes.starts_with(&[0xfe, 0xff]) {
+        return decode_utf16_bytes(&bytes[2..], false);
+    }
+
+    String::from_utf8(bytes)
+        .map_err(|error| format!("Serato txtファイルをUTF-8として解釈できませんでした。{error}"))
+}
+
+fn decode_utf16_bytes(bytes: &[u8], little_endian: bool) -> Result<String, String> {
+    if bytes.len() % 2 != 0 {
+        return Err("Serato txtファイルのUTF-16データが不正です。".to_string());
+    }
+
+    let units = bytes
+        .chunks_exact(2)
+        .map(|chunk| {
+            if little_endian {
+                u16::from_le_bytes([chunk[0], chunk[1]])
+            } else {
+                u16::from_be_bytes([chunk[0], chunk[1]])
+            }
+        })
+        .collect::<Vec<_>>();
+
+    String::from_utf16(&units)
+        .map_err(|error| format!("Serato txtファイルをUTF-16として解釈できませんでした。{error}"))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SeratoTxtDelimiter {
+    Tab,
+    Spaces,
+    Comma,
+}
+
+#[derive(Clone, Debug)]
+struct SeratoHeader {
+    line_index: usize,
+    delimiter: SeratoTxtDelimiter,
+    title_index: usize,
+    artist_index: Option<usize>,
+    bpm_index: Option<usize>,
+}
+
+fn parse_serato_history_txt(text: &str) -> Result<Vec<Track>, String> {
+    let lines = text
+        .lines()
+        .map(|line| line.trim_matches('\u{feff}'))
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    let header = find_serato_header(&lines).ok_or_else(|| {
+        "Serato txtの列見出しを検出できませんでした。Title / Artist / BPM などの列を含むHistory txtを書き出してください。".to_string()
+    })?;
+
+    let mut tracks = Vec::new();
+    for line in lines.iter().skip(header.line_index + 1) {
+        let columns = split_serato_txt_line(line, header.delimiter);
+        let required_columns = header
+            .bpm_index
+            .into_iter()
+            .chain(header.artist_index)
+            .chain(std::iter::once(header.title_index))
+            .max()
+            .unwrap_or(header.title_index)
+            + 1;
+        if columns.len() < required_columns {
+            continue;
+        }
+
+        let title = columns
+            .get(header.title_index)
+            .map(|value| value.trim())
+            .unwrap_or_default();
+        if title.is_empty() {
+            continue;
+        }
+
+        let artist = header
+            .artist_index
+            .and_then(|index| columns.get(index))
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default();
+        let bpm = header
+            .bpm_index
+            .and_then(|index| columns.get(index))
+            .and_then(|value| parse_serato_bpm(value));
+
+        tracks.push(Track {
+            number: tracks.len() + 1,
+            artist,
+            title: title.to_string(),
+            bpm,
+        });
+    }
+
+    Ok(tracks)
+}
+
+fn find_serato_header(lines: &[&str]) -> Option<SeratoHeader> {
+    lines.iter().enumerate().find_map(|(line_index, line)| {
+        let delimiter = detect_serato_txt_delimiter(line);
+        let columns = split_serato_txt_line(line, delimiter);
+        let normalized = columns
+            .iter()
+            .map(|column| normalize_header_name(column))
+            .collect::<Vec<_>>();
+        let title_index = normalized
+            .iter()
+            .position(|name| is_serato_title_header(name))?;
+        let artist_index = normalized
+            .iter()
+            .position(|name| is_serato_artist_header(name));
+        let bpm_index = normalized
+            .iter()
+            .position(|name| is_serato_bpm_header(name));
+        if artist_index.is_none() && bpm_index.is_none() {
+            return None;
+        }
+
+        Some(SeratoHeader {
+            line_index,
+            delimiter,
+            title_index,
+            artist_index,
+            bpm_index,
+        })
+    })
+}
+
+fn normalize_header_name(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['_', '-'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn is_serato_title_header(name: &str) -> bool {
+    matches!(
+        name,
+        "title" | "track" | "track title" | "track name" | "song" | "name"
+    ) || name.ends_with(" title")
+        || name.ends_with(" name")
+}
+
+fn is_serato_artist_header(name: &str) -> bool {
+    matches!(name, "artist" | "artist name")
+}
+
+fn is_serato_bpm_header(name: &str) -> bool {
+    matches!(name, "bpm" | "tempo")
+}
+
+fn detect_serato_txt_delimiter(line: &str) -> SeratoTxtDelimiter {
+    if line.contains('\t') {
+        return SeratoTxtDelimiter::Tab;
+    }
+    if split_on_consecutive_whitespace(line).len() > 1 {
+        return SeratoTxtDelimiter::Spaces;
+    }
+    if line.contains(',') {
+        return SeratoTxtDelimiter::Comma;
+    }
+    SeratoTxtDelimiter::Spaces
+}
+
+fn split_serato_txt_line(line: &str, delimiter: SeratoTxtDelimiter) -> Vec<String> {
+    match delimiter {
+        SeratoTxtDelimiter::Tab => line
+            .split('\t')
+            .map(|value| value.trim().to_string())
+            .collect(),
+        SeratoTxtDelimiter::Comma => line
+            .split(',')
+            .map(|value| value.trim().to_string())
+            .collect(),
+        SeratoTxtDelimiter::Spaces => {
+            let split = split_on_consecutive_whitespace(line);
+            if split.len() > 1 {
+                split
+            } else {
+                line.split_whitespace()
+                    .map(|value| value.trim().to_string())
+                    .collect()
+            }
+        }
+    }
+}
+
+fn split_on_consecutive_whitespace(line: &str) -> Vec<String> {
+    let mut columns = Vec::new();
+    let mut current = String::new();
+    let mut whitespace_count = 0;
+
+    for character in line.chars() {
+        if character.is_whitespace() {
+            whitespace_count += 1;
+            continue;
+        }
+
+        if whitespace_count >= 2 && !current.trim().is_empty() {
+            columns.push(current.trim().to_string());
+            current.clear();
+        } else if whitespace_count > 0 && !current.is_empty() {
+            current.push(' ');
+        }
+        whitespace_count = 0;
+        current.push(character);
+    }
+
+    if !current.trim().is_empty() {
+        columns.push(current.trim().to_string());
+    }
+
+    columns
+}
+
+fn parse_serato_bpm(value: &str) -> Option<f64> {
+    parse_bpm_text(value)
 }
 
 fn validate_rekordbox_xml_path(path: &str) -> Result<(), String> {
@@ -1699,6 +1965,7 @@ pub fn run() {
         .manage(Mutex::new(HashMap::<String, PendingVrcUpload>::new()))
         .invoke_handler(tauri::generate_handler![
             list_rekordbox_playlists,
+            import_serato_history_txt,
             get_playlist_tracks,
             read_image_as_data_url,
             save_png_files,
@@ -1849,6 +2116,81 @@ mod tests {
         assert_eq!(result.failed_count, 0);
         assert_eq!(result.tracks[0].artist, "Normal1zer, Halv");
         assert_eq!(result.tracks[0].title, "Pixel Rebelz - Halv Remix");
+    }
+
+    #[test]
+    fn parses_serato_tab_delimited_history_txt() {
+        let text = "Title\tArtist\tBPM\tStart Time\tEnd Time\tPlaytime\tDeck\nSong A\tArtist A\t170\t22:00:00\t22:03:00\t00:03:00\tleft\nSong B\tArtist B\t150.5\t22:03:00\t22:06:00\t00:03:00\tright";
+
+        let tracks = parse_serato_history_txt(text).unwrap();
+
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].number, 1);
+        assert_eq!(tracks[0].title, "Song A");
+        assert_eq!(tracks[0].artist, "Artist A");
+        assert_eq!(tracks[0].bpm, Some(170.0));
+        assert_eq!(tracks[1].number, 2);
+        assert_eq!(tracks[1].title, "Song B");
+        assert_eq!(tracks[1].artist, "Artist B");
+        assert_eq!(tracks[1].bpm, Some(150.5));
+    }
+
+    #[test]
+    fn parses_serato_history_txt_without_bpm_column() {
+        let text = "Title\tArtist\tStart Time\nSong A\tArtist A\t22:00:00";
+
+        let tracks = parse_serato_history_txt(text).unwrap();
+
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].title, "Song A");
+        assert_eq!(tracks[0].artist, "Artist A");
+        assert_eq!(tracks[0].bpm, None);
+    }
+
+    #[test]
+    fn skips_serato_history_txt_rows_with_empty_title() {
+        let text = "Title\tArtist\tBPM\n\tArtist A\t128\nSong B\tArtist B\t130";
+
+        let tracks = parse_serato_history_txt(text).unwrap();
+
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].number, 1);
+        assert_eq!(tracks[0].title, "Song B");
+        assert_eq!(tracks[0].artist, "Artist B");
+        assert_eq!(tracks[0].bpm, Some(130.0));
+    }
+
+    #[test]
+    fn accepts_serato_history_txt_header_name_variants() {
+        let text = "Track\tArtist Name\tTempo\nSong A\tArtist A\t128 BPM";
+
+        let tracks = parse_serato_history_txt(text).unwrap();
+
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].title, "Song A");
+        assert_eq!(tracks[0].artist, "Artist A");
+        assert_eq!(tracks[0].bpm, Some(128.0));
+    }
+
+    #[test]
+    fn keeps_duplicate_serato_history_txt_rows() {
+        let text = "Title\tArtist\tBPM\nSong A\tArtist A\t128\nSong A\tArtist A\t128";
+
+        let tracks = parse_serato_history_txt(text).unwrap();
+
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].number, 1);
+        assert_eq!(tracks[1].number, 2);
+        assert_eq!(tracks[0].title, "Song A");
+        assert_eq!(tracks[1].title, "Song A");
+    }
+
+    #[test]
+    fn errors_when_serato_history_txt_header_is_missing() {
+        let error =
+            parse_serato_history_txt("Song A Artist A 128\nSong B Artist B 130").unwrap_err();
+
+        assert!(error.contains("列見出し") || error.contains("Title / Artist / BPM"));
     }
 
     #[test]

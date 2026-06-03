@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { FileDown, FolderOpen, Image, RefreshCw, Upload, ScanText } from "lucide-react";
+import { FileDown, FolderOpen, FileText, Image, RefreshCw, Upload, ScanText } from "lucide-react";
 import { createPages, renderCardToCanvas, renderVrchatExportCardToCanvas, renderWideCardToCanvas } from "./rendering";
 import type { BackgroundSettings, CardMetadata, ExportAspectRatio, GradientPreset, OcrResult, PlaylistSummary, PngPayload, Track, TrackEnrichmentFailure, TrackEnrichmentResult, VrcImageOptions, VrcLoginStatus, VrcPendingEmailOtp, VrcUploadResult } from "./types";
 
@@ -23,13 +23,14 @@ const initialBackground: BackgroundSettings = {
 const wizardSteps = ["Import", "Details", "Design", "Export"] as const;
 const GEMINI_MODEL = "gemini-3.1-flash-lite";
 const LEGACY_GEMINI_API_KEY_STORAGE_KEY = "gemini_api_key";
-type ActiveInput = "none" | "xml" | "ocr";
+type ActiveInput = "none" | "xml" | "ocr" | "serato_txt";
 type VrchatUiState = "checking_saved_login" | "logged_in" | "logged_out" | "relogin_required" | "pending_email_otp";
 
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const exportCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [xmlPath, setXmlPath] = useState("");
+  const [seratoTxtPath, setSeratoTxtPath] = useState("");
   const [localPlaylists, setLocalPlaylists] = useState<PlaylistSummary[]>([]);
   const [playlistKey, setPlaylistKey] = useState("");
   const [activeInput, setActiveInput] = useState<ActiveInput>("none");
@@ -39,7 +40,7 @@ export function App() {
   const [exportAspectRatio, setExportAspectRatio] = useState<ExportAspectRatio>("default");
   const [activeStep, setActiveStep] = useState(0);
   const [pageIndex, setPageIndex] = useState(0);
-  const [importStatus, setImportStatus] = useState("rekordbox XML を選択してください。");
+  const [importStatus, setImportStatus] = useState("rekordbox XML、Serato txt、または画像OCRから読み込んでください。");
   const [importError, setImportError] = useState("");
   const [detailsStatus, setDetailsStatus] = useState("");
   const [detailsError, setDetailsError] = useState("");
@@ -125,6 +126,36 @@ export function App() {
     } catch (err) {
       setLocalPlaylists([]);
       setImportError(errorMessage(err));
+    }
+  }
+
+
+  async function chooseSeratoTxt() {
+    setImportError("");
+    const selected = await open({
+      multiple: false,
+      filters: [{ name: "Serato History txt", extensions: ["txt"] }]
+    });
+
+    if (typeof selected !== "string") return;
+
+    setSeratoTxtPath(selected);
+    setPlaylistKey("");
+    setLocalPlaylists([]);
+    setPageIndex(0);
+    setImportStatus("Serato txtを読み込んでいます...");
+
+    try {
+      const loadedTracks = await invoke<Track[]>("import_serato_history_txt", { path: selected });
+      setTracks(loadedTracks);
+      setActiveInput("serato_txt");
+      setActiveStep(1);
+      setDetailsStatus(`Serato txtから ${loadedTracks.length} 曲を読み込みました。`);
+      setImportStatus(`Serato txtから ${loadedTracks.length} 曲を読み込みました。`);
+    } catch (err) {
+      setTracks([]);
+      setImportStatus("Serato txtの読み込みに失敗しました。");
+      setImportError(`Serato txtの読み込みに失敗しました。${errorMessage(err)}`);
     }
   }
 
@@ -358,7 +389,16 @@ export function App() {
     }
 
     try {
-      if (playlistKey) {
+      if (activeInput === "serato_txt" && seratoTxtPath) {
+        setImportStatus("Serato txtを読み込んでいます...");
+        const loadedTracks = await invoke<Track[]>("import_serato_history_txt", { path: seratoTxtPath });
+        setTracks(loadedTracks);
+        setPlaylistKey("");
+        setLocalPlaylists([]);
+        setPageIndex(0);
+        setDetailsStatus(`Serato txtから ${loadedTracks.length} 曲を読み込みました。`);
+        setImportStatus(`Serato txtから ${loadedTracks.length} 曲を読み込みました。`);
+      } else if (playlistKey) {
         await loadPlaylist(playlistKey);
       } else if (xmlPath) {
         const items = await invoke<PlaylistSummary[]>("list_rekordbox_playlists", { path: xmlPath });
@@ -657,6 +697,15 @@ export function App() {
             </div>
 
             <div className="field">
+              <label>Serato txt</label>
+              <button className="file-button" type="button" onClick={() => void chooseSeratoTxt()}>
+                <FileText size={18} />
+                <span>{seratoTxtPath ? compactPath(seratoTxtPath) : "Serato txtを選択"}</span>
+              </button>
+              <p className="message">Serato DJ ProのHistoryから書き出したtxtファイルを読み込みます。</p>
+            </div>
+
+            <div className="field">
               <label>Gemini API Key</label>
               <input
                 type="password"
@@ -716,7 +765,7 @@ export function App() {
               <select
                 value={playlistKey}
                 onChange={(event) => void loadPlaylist(event.target.value)}
-                disabled={!playlists.length || activeInput === "ocr"}
+                disabled={!playlists.length || activeInput === "ocr" || activeInput === "serato_txt"}
               >
                 <option value="">選択してください</option>
                 {playlists.map((playlist) => (
@@ -726,6 +775,7 @@ export function App() {
                 ))}
               </select>
               {activeInput === "ocr" && <p className="message">現在はOCR入力を表示中です。XMLプレイリストを使う場合は rekordbox XML を読み込み直してください。</p>}
+              {activeInput === "serato_txt" && <p className="message">現在はSerato txt入力を表示中です。rekordbox XMLプレイリストを使う場合はrekordbox XMLを読み込み直してください。</p>}
             </div>
 
             {detailsStatus && <p className="message">{detailsStatus}</p>}
